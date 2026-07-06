@@ -1,0 +1,8 @@
+{
+  "name": "NucleoSim Studio",
+  "description": "A high-end molecular biology simulator for visualizing and analyzing DNA/RNA sequences with real-time transcription, translation, and AI-powered genomic insights.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

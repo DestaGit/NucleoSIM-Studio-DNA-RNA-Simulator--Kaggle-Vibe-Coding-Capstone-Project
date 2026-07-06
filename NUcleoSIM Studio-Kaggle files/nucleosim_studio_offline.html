@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NucleoSim Studio Offline — Standalone Molecular Biology Simulator</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <!-- React and ReactDOM UMD -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel CDN to compile JSX in-browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #030712;
+            color: #f8fafc;
+            margin: 0;
+            overflow-x: hidden;
+        }
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        /* Custom Scrollbars */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+<script src="/_aistudio-iframe.js"></script></head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+
+        const CODON_TABLE = {
+            'UUU': 'Phe', 'UUC': 'Phe', 'UUA': 'Leu', 'UUG': 'Leu',
+            'CUU': 'Leu', 'CUC': 'Leu', 'CUA': 'Leu', 'CUG': 'Leu',
+            'AUU': 'Ile', 'AUC': 'Ile', 'AUA': 'Ile', 'AUG': 'Met (Start)',
+            'GUU': 'Val', 'GUC': 'Val', 'GUA': 'Val', 'GUG': 'Val',
+            'UCU': 'Ser', 'UCC': 'Ser', 'UCA': 'Ser', 'UCG': 'Ser',
+            'CCU': 'Pro', 'CCC': 'Pro', 'CCA': 'Pro', 'CCG': 'Pro',
+            'ACU': 'Thr', 'ACC': 'Thr', 'ACA': 'Thr', 'ACG': 'Thr',
+            'GCU': 'Ala', 'GCC': 'Ala', 'GCA': 'Ala', 'GCG': 'Ala',
+            'UAU': 'Tyr', 'UAC': 'Tyr', 'UAA': 'Stop', 'UAG': 'Stop',
+            'CAU': 'His', 'CAC': 'His', 'CAA': 'Gln', 'CAG': 'Gln',
+            'AAU': 'Asn', 'AAC': 'Asn', 'AAA': 'Lys', 'AAG': 'Lys',
+            'GAU': 'Asp', 'GAC': 'Asp', 'GAA': 'Glu', 'GAG': 'Glu',
+            'UGU': 'Cys', 'UGC': 'Cys', 'UGA': 'Stop', 'UGG': 'Trp',
+            'CGU': 'Arg', 'CGC': 'Arg', 'CGA': 'Arg', 'CGG': 'Arg',
+            'AGU': 'Ser', 'AGC': 'Ser', 'AGA': 'Arg', 'AGG': 'Arg',
+            'GGU': 'Gly', 'GGC': 'Gly', 'GGA': 'Gly', 'GGG': 'Gly'
+        };
+
+        const BASE_COLORS = {
+            A: 'bg-emerald-400 text-slate-950',
+            T: 'bg-rose-400 text-slate-950',
+            U: 'bg-amber-400 text-slate-950',
+            G: 'bg-sky-400 text-slate-950',
+            C: 'bg-indigo-400 text-slate-950'
+        };
+
+        const BASE_FULL_NAMES = {
+            A: { name: 'Adenine', type: 'Purine (2 Rings)', hBonds: 2, complement: 'T / U' },
+            T: { name: 'Thymine', type: 'Pyrimidine (1 Ring)', hBonds: 2, complement: 'A' },
+            U: { name: 'Uracil', type: 'Pyrimidine (1 Ring)', hBonds: 2, complement: 'A' },
+            G: { name: 'Guanine', type: 'Purine (2 Rings)', hBonds: 3, complement: 'C' },
+            C: { name: 'Cytosine', type: 'Pyrimidine (1 Ring)', hBonds: 3, complement: 'G' }
+        };
+
+        const PRESETS = [
+            { name: 'TATA Box Promoter', seq: 'TATAAATAGGCGGCC', type: 'DNA', desc: 'Promoter sequence recruitment site.' },
+            { name: 'Insulin Segment', seq: 'AGCCCTCCAGTGGC', type: 'DNA', desc: 'Signal fragment coding sequence.' },
+            { name: 'SARS-CoV-2 Spike', seq: 'AUGUUUGUUUUUCUU', type: 'RNA', desc: 'Initiation loop region.' },
+            { name: 'Mitochondrial Loop', seq: 'GTCTGCAGTATATAAAC', type: 'DNA', desc: 'Cellular regulatory locus.' }
+        ];
+
+        function StandaloneApp() {
+            const [input, setInput] = useState('ATGCATGCATGC');
+            const [type, setType] = useState('DNA');
+            const [activeTab, setActiveTab] = useState('studio'); // 'studio', 'academy', 'ribosome'
+            const [selectedBaseIndex, setSelectedBaseIndex] = useState(null);
+            const [localSavedStrands, setLocalSavedStrands] = useState([]);
+            const [newName, setNewName] = useState('');
+            const [mutationHistory, setMutationHistory] = useState([]);
+            
+            // Academy State
+            const [academyBase, setAcademyBase] = useState('A');
+
+            // Ribosome Simulation State
+            const [ribosomeIndex, setRibosomeIndex] = useState(0);
+            const [isPlayingRibosome, setIsPlayingRibosome] = useState(false);
+            const [ribosomeSpeed, setRibosomeSpeed] = useState(1200);
+
+            // Load saved strands on init
+            useEffect(() => {
+                const stored = localStorage.getItem('nucleosim_studio_offline_strands');
+                if (stored) {
+                    try { setLocalSavedStrands(JSON.parse(stored)); } catch(e){}
+                }
+            }, []);
+
+            // Handle Sequence Repair
+            const handleSanitizeAndRepair = () => {
+                let sanitized = input.toUpperCase().replace(/[^ATCGU]/g, '');
+                if (type === 'DNA') {
+                    sanitized = sanitized.replace(/U/g, 'T');
+                } else {
+                    sanitized = sanitized.replace(/T/g, 'U');
+                }
+                setInput(sanitized);
+                setSelectedBaseIndex(null);
+            };
+
+            // Calculate Complementary & Protein
+            const genetics = useMemo(() => {
+                const seq = input.toUpperCase().replace(/[^ATCGU]/g, '');
+                
+                // Complement
+                const comp = type === 'DNA' ? seq.split('').map(b => {
+                    if (b === 'A') return 'T';
+                    if (b === 'T') return 'A';
+                    if (b === 'C') return 'G';
+                    if (b === 'G') return 'C';
+                    return b;
+                }).join('') : '';
+
+                // Translation
+                let rnaSeq = type === 'DNA' ? seq.replace(/T/g, 'U') : seq;
+                const codons = [];
+                for (let i = 0; i < rnaSeq.length - 2; i += 3) {
+                    codons.push(rnaSeq.slice(i, i + 3));
+                }
+                const protein = codons.map(c => CODON_TABLE[c] || '?').join(' - ');
+
+                // GC Content
+                const gcCount = seq.split('').filter(b => b === 'G' || b === 'C').length;
+                const gc = seq.length > 0 ? (gcCount / seq.length) * 100 : 0;
+
+                // Molecular Weight
+                const avgWeight = type === 'RNA' ? 329.2 : 308.2;
+                const mw = seq.length > 0 ? (seq.length * avgWeight) + 79.0 : 0;
+
+                return { comp, protein, gc, mw, codons };
+            }, [input, type]);
+
+            // Ribosome interval loop
+            useEffect(() => {
+                let interval;
+                if (isPlayingRibosome && ribosomeIndex < genetics.codons.length) {
+                    interval = setInterval(() => {
+                        setRibosomeIndex(prev => {
+                            if (prev >= genetics.codons.length - 1) {
+                                setIsPlayingRibosome(false);
+                                return prev + 1;
+                            }
+                            return prev + 1;
+                        });
+                    }, ribosomeSpeed);
+                }
+                return () => clearInterval(interval);
+            }, [isPlayingRibosome, ribosomeIndex, genetics.codons.length, ribosomeSpeed]);
+
+            // Mutations
+            const handleMutateBase = (newBase) => {
+                if (selectedBaseIndex === null) return;
+                const oldBase = input[selectedBaseIndex].toUpperCase();
+                if (oldBase === newBase) return;
+
+                const seqArray = input.split('');
+                seqArray[selectedBaseIndex] = newBase;
+                const newSeq = seqArray.join('');
+
+                const codonIdx = Math.floor(selectedBaseIndex / 3);
+                const buildMRNA = (s) => {
+                    const clean = s.toUpperCase().replace(/[^ATCGU]/g, '');
+                    return type === 'DNA' ? clean.replace(/T/g, 'U') : clean;
+                };
+
+                const oldMrna = buildMRNA(input);
+                const newMrna = buildMRNA(newSeq);
+
+                const oldCodon = oldMrna.slice(codonIdx * 3, (codonIdx + 1) * 3);
+                const newCodon = newMrna.slice(codonIdx * 3, (codonIdx + 1) * 3);
+
+                let effect = "In-place replacement";
+                if (oldCodon.length === 3 && newCodon.length === 3) {
+                    const oldAA = CODON_TABLE[oldCodon] || '?';
+                    const newAA = CODON_TABLE[newCodon] || '?';
+                    if (oldAA === newAA) {
+                        effect = `Silent SNP (${oldCodon} → ${newCodon} both code for ${oldAA})`;
+                    } else if (newAA.toLowerCase().includes('stop')) {
+                        effect = `Nonsense SNP (${oldCodon} → ${newCodon} triggers early Stop translation)`;
+                    } else {
+                        effect = `Missense SNP (${oldCodon} → ${newCodon} converts amino acid from ${oldAA} to ${newAA})`;
+                    }
+                }
+
+                const record = {
+                    index: selectedBaseIndex,
+                    from: oldBase,
+                    to: newBase,
+                    effect,
+                    timestamp: new Date().toLocaleTimeString(),
+                    id: Math.random()
+                };
+
+                setMutationHistory(prev => [record, ...prev]);
+                setInput(newSeq);
+            };
+
+            // Save locally
+            const handleSaveLocal = (e) => {
+                e.preventDefault();
+                if (!newName.trim()) return;
+                const newStrand = {
+                    id: Date.now(),
+                    name: newName.trim(),
+                    sequence: input,
+                    type: type,
+                    protein: genetics.protein,
+                    gc: genetics.gc,
+                    mw: genetics.mw
+                };
+                const updated = [newStrand, ...localSavedStrands];
+                setLocalSavedStrands(updated);
+                localStorage.setItem('nucleosim_studio_offline_strands', JSON.stringify(updated));
+                setNewName('');
+            };
+
+            // Delete local
+            const handleDeleteLocal = (id, e) => {
+                e.stopPropagation();
+                const filtered = localSavedStrands.filter(s => s.id !== id);
+                setLocalSavedStrands(filtered);
+                localStorage.setItem('nucleosim_studio_offline_strands', JSON.stringify(filtered));
+            };
+
+            // FASTA Export
+            const handleExportFASTA = () => {
+                const header = `>NucleoSim_Studio_Offline_${type}_${input.length}bp | Standalone Export`;
+                const formattedSeq = input.match(/.{1,60}/g)?.join('\n') || input;
+                const file = new Blob([`${header}\n${formattedSeq}`], { type: 'text/plain' });
+                const element = document.createElement('a');
+                element.href = URL.createObjectURL(file);
+                element.download = `nucleosim_studio_offline_${type.toLowerCase()}.fasta`;
+                element.click();
+            };
+
+            // JSON Snapshot Export
+            const handleExportJSON = () => {
+                const snapshot = {
+                    metadata: {
+                        system: "NucleoSim Studio Standalone",
+                        exportedAt: new Date().toISOString(),
+                        sequenceType: type,
+                        sequenceLength: input.length
+                    },
+                    sequence: input,
+                    complementaryStrand: genetics.comp,
+                    translatedProtein: genetics.protein,
+                    metrics: {
+                        gcRatio: genetics.gc,
+                        molecularWeight: genetics.mw
+                    },
+                    mutationChronology: mutationHistory
+                };
+                const file = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+                const element = document.createElement('a');
+                element.href = URL.createObjectURL(file);
+                element.download = `nucleosim_studio_offline_snapshot_${type.toLowerCase()}.json`;
+                element.click();
+            };
+
+            const selectedBaseInfo = selectedBaseIndex !== null && input[selectedBaseIndex] ? {
+                base: input[selectedBaseIndex].toUpperCase(),
+                index: selectedBaseIndex,
+                details: BASE_FULL_NAMES[input[selectedBaseIndex].toUpperCase()]
+            } : null;
+
+            // Academy Base Pairing helper
+            const academyBaseInfo = BASE_FULL_NAMES[academyBase];
+            const academyComplement = academyBase === 'A' ? (type === 'DNA' ? 'T' : 'U') : (academyBase === 'T' || academyBase === 'U' ? 'A' : (academyBase === 'G' ? 'C' : 'G'));
+            const academyComplementInfo = BASE_FULL_NAMES[academyComplement];
+
+            // Ribosome Derived Peptides
+            const currentPeptides = useMemo(() => {
+                return genetics.codons.slice(0, ribosomeIndex).map(c => CODON_TABLE[c] || '???');
+            }, [genetics.codons, ribosomeIndex]);
+
+            return (
+                <div className="max-w-7xl mx-auto p-4 md:p-8">
+                    {/* Header */}
+                    <header className="mb-8 flex flex-col md:flex-row justify-between items-center gap-4 pb-6 border-b border-gray-900">
+                        <div>
+                            <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-400 to-sky-400 bg-clip-text text-transparent flex items-center gap-2">
+                                NucleoSim Studio Offline <span className="text-gray-500 font-light text-sm px-2 py-0.5 bg-gray-900 border border-white/5 rounded-full uppercase tracking-wider">v3.0</span>
+                            </h1>
+                            <p className="text-xs text-gray-400 mt-1">Zero-dependency double-helix workspace, mutation ledger, base academy, and animated ribosomal simulator</p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-4">
+                            {/* Mode Toggle */}
+                            <div className="flex gap-1 p-1 bg-gray-900/80 rounded-xl border border-white/5">
+                                <button 
+                                    onClick={() => { setType('DNA'); setInput(input.replace(/U/g, 'T')); setSelectedBaseIndex(null); }}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${type === 'DNA' ? 'bg-emerald-500 text-slate-950' : 'text-gray-400 hover:text-white'}`}
+                                >
+                                    DNA
+                                </button>
+                                <button 
+                                    onClick={() => { setType('RNA'); setInput(input.replace(/T/g, 'U')); setSelectedBaseIndex(null); }}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${type === 'RNA' ? 'bg-sky-500 text-slate-950' : 'text-gray-400 hover:text-white'}`}
+                                >
+                                    RNA
+                                </button>
+                            </div>
+
+                            {/* Tabs */}
+                            <div className="flex gap-1 p-1 bg-gray-900/80 rounded-xl border border-white/5">
+                                <button 
+                                    onClick={() => setActiveTab('studio')}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'studio' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'}`}
+                                >
+                                    Sequence Studio
+                                </button>
+                                <button 
+                                    onClick={() => setActiveTab('academy')}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'academy' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'}`}
+                                >
+                                    Base Chemistry
+                                </button>
+                                <button 
+                                    onClick={() => setActiveTab('ribosome')}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'ribosome' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'}`}
+                                >
+                                    Ribosome Lab
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* MAIN AREA */}
+                    {activeTab === 'studio' && (
+                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                            {/* LEFT PANEL: Inputs & Presets */}
+                            <div className="lg:col-span-4 space-y-6">
+                                
+                                {/* Presets */}
+                                <section className="bg-gray-900/50 p-5 rounded-2xl border border-white/5 space-y-3">
+                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Genomic Preset Models</h3>
+                                    <div className="space-y-2">
+                                        {PRESETS.map((p) => (
+                                            <button
+                                                key={p.name}
+                                                onClick={() => { setInput(p.seq); setType(p.type); setSelectedBaseIndex(null); }}
+                                                className="w-full p-3 bg-gray-950/60 hover:bg-gray-950 rounded-xl border border-gray-800 hover:border-gray-700 text-left transition-all group"
+                                            >
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <span className="text-xs font-bold text-white group-hover:text-emerald-400 transition-colors">{p.name}</span>
+                                                    <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded ${p.type === 'DNA' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-sky-500/10 text-sky-400'}`}>{p.type}</span>
+                                                </div>
+                                                <p className="text-[10px] text-gray-500 line-clamp-1">{p.desc}</p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </section>
+
+                                {/* Input Editor */}
+                                <section className="bg-gray-900/50 p-5 rounded-2xl border border-white/5 space-y-3">
+                                    <div className="flex justify-between items-center">
+                                        <h3 className="text-xs font-bold text-gray-200">Sequence Editor</h3>
+                                        <span className="text-[9px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded font-bold">MUTABLE</span>
+                                    </div>
+
+                                    <textarea
+                                        className="w-full bg-gray-950 border border-gray-800 rounded-xl p-3 mono text-xs text-emerald-400 uppercase focus:outline-none focus:ring-1 focus:ring-emerald-500 leading-relaxed tracking-wider"
+                                        rows="4"
+                                        value={input}
+                                        onChange={(e) => { setInput(e.target.value.toUpperCase()); setSelectedBaseIndex(null); }}
+                                        placeholder="Enter genetic bases..."
+                                    />
+
+                                    {/* Verification / Repair warnings */}
+                                    {((type === 'DNA' && input.includes('U')) || (type === 'RNA' && input.includes('T'))) && (
+                                        <button 
+                                            onClick={handleSanitizeAndRepair}
+                                            className="w-full py-2 bg-rose-500 hover:bg-rose-600 text-slate-950 text-xs font-bold rounded-lg transition-all shadow-lg shadow-rose-500/10"
+                                        >
+                                            ⚠️ Repair Mode Base Incompatibility
+                                        </button>
+                                    )}
+
+                                    {/* Genomic Keyboard */}
+                                    <div className="space-y-1.5">
+                                        <div className="text-[10px] text-gray-500 font-bold uppercase">Genomic Insertion Panel</div>
+                                        <div className="grid grid-cols-5 gap-1">
+                                            {['A', 'T', 'C', 'G', 'U'].map(base => {
+                                                const isUnfit = (type === 'DNA' && base === 'U') || (type === 'RNA' && base === 'T');
+                                                return (
+                                                    <button
+                                                        key={`insert-${base}`}
+                                                        disabled={isUnfit}
+                                                        onClick={() => setInput(prev => prev + base)}
+                                                        className={`py-1 rounded font-bold text-xs ${isUnfit ? 'bg-gray-950 text-gray-800 cursor-not-allowed' : 'bg-gray-800 hover:bg-gray-700 text-white'}`}
+                                                    >
+                                                        +{base}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex justify-between text-[10px] text-gray-500 font-bold border-t border-gray-800/80 pt-2">
+                                        <span>Length: {input.length}bp</span>
+                                        <span>GC Content: {genetics.gc.toFixed(1)}%</span>
+                                    </div>
+                                </section>
+
+                                {/* Local Library Storage */}
+                                <section className="bg-gray-900/50 p-5 rounded-2xl border border-white/5 space-y-3">
+                                    <h3 className="text-xs font-bold text-gray-200">Local Browser Snapshots</h3>
+                                    <form onSubmit={handleSaveLocal} className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            required
+                                            placeholder="Name this workspace..."
+                                            value={newName}
+                                            onChange={e => setNewName(e.target.value)}
+                                            className="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 text-white"
+                                        />
+                                        <button type="submit" className="px-3 bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-xs font-bold rounded-lg transition-all">Save</button>
+                                    </form>
+
+                                    <div className="space-y-1 max-h-[160px] overflow-y-auto">
+                                        {localSavedStrands.map(s => (
+                                            <div 
+                                                key={s.id}
+                                                onClick={() => { setInput(s.sequence); setType(s.type); setSelectedBaseIndex(null); }}
+                                                className="p-2 bg-gray-950/60 hover:bg-gray-900 border border-gray-800/60 rounded-lg text-left cursor-pointer flex justify-between items-center group transition-colors"
+                                            >
+                                                <div className="truncate pr-2">
+                                                    <div className="text-[11px] font-bold text-white truncate">{s.name}</div>
+                                                    <div className="text-[9px] text-gray-500 font-mono truncate">{s.sequence}</div>
+                                                </div>
+                                                <button 
+                                                    onClick={(e) => handleDeleteLocal(s.id, e)}
+                                                    className="text-gray-600 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                                                >
+                                                    ✕
+                                                </button>
+                                            </div>
+                                        ))}
+                                        {localSavedStrands.length === 0 && (
+                                            <div className="text-center text-[10px] text-gray-600 py-4">No saved local snapshots.</div>
+                                        )}
+                                    </div>
+                                </section>
+
+                            </div>
+
+                            {/* RIGHT PANEL: Helix, Inspector, Calculations */}
+                            <div className="lg:col-span-8 space-y-6">
+                                
+                                {/* Dynamic Helix */}
+                                <section className="bg-gray-900/40 rounded-2xl border border-white/5 p-5 relative overflow-hidden">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Dynamic Strand Visualizer</h3>
+                                        <span className="text-[10px] text-gray-500">Click any nucleobase to edit/mutate</span>
+                                    </div>
+                                    <div className="overflow-x-auto py-4">
+                                        <div className="flex flex-col gap-8 min-w-max pb-2">
+                                            
+                                            {/* Sense / Top Strand */}
+                                            <div className="flex gap-2">
+                                                <div className="w-12 flex items-center justify-end text-[10px] font-bold text-slate-500 uppercase font-mono mr-2">5' →</div>
+                                                {input.split('').map((base, idx) => {
+                                                    const isSel = selectedBaseIndex === idx;
+                                                    return (
+                                                        <div 
+                                                            key={`top-${idx}`}
+                                                            onClick={() => setSelectedBaseIndex(idx)}
+                                                            className={`flex flex-col items-center cursor-pointer transition-transform ${isSel ? 'scale-110' : 'hover:scale-105'}`}
+                                                        >
+                                                            <span className="text-[8px] text-gray-600 mb-1 font-bold font-mono">{idx + 1}</span>
+                                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${BASE_COLORS[base] || 'bg-gray-800 text-white'} ${isSel ? 'ring-4 ring-emerald-400/50 shadow-lg shadow-emerald-400/20' : ''}`}>
+                                                                {base}
+                                                            </div>
+                                                            <div className="h-6 w-0.5 bg-gray-800/80 mt-1"></div>
+                                                        </div>
+                                                    );
+                                                })}
+                                                {input.length === 0 && <span className="text-xs text-gray-600">No sequence loaded</span>}
+                                            </div>
+
+                                            {/* Antisense / Bottom Strand (complement DNA) */}
+                                            {type === 'DNA' && genetics.comp && (
+                                                <div className="flex gap-2">
+                                                    <div className="w-12 flex items-center justify-end text-[10px] font-bold text-slate-500 uppercase font-mono mr-2">3' ←</div>
+                                                    {genetics.comp.split('').map((base, idx) => {
+                                                        const isSel = selectedBaseIndex === idx;
+                                                        return (
+                                                            <div 
+                                                                key={`bot-${idx}`}
+                                                                onClick={() => setSelectedBaseIndex(idx)}
+                                                                className={`flex flex-col items-center cursor-pointer transition-transform ${isSel ? 'scale-110' : 'hover:scale-105'}`}
+                                                            >
+                                                                <div className="h-6 w-0.5 bg-gray-800/80 mb-1"></div>
+                                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${BASE_COLORS[base] || 'bg-gray-800 text-white'} ${isSel ? 'ring-4 ring-sky-400/50 shadow-lg shadow-sky-400/20' : ''}`}>
+                                                                    {base}
+                                                                </div>
+                                                                <span className="text-[8px] text-gray-600 mt-1 font-bold font-mono">{idx + 1}</span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+
+                                        </div>
+                                    </div>
+                                </section>
+
+                                {/* Base Mutation Deck */}
+                                {selectedBaseInfo && (
+                                    <section className="p-5 bg-gray-950 rounded-2xl border border-amber-500/20 grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-300">
+                                        <div>
+                                            <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-3">Base Inspector (Position {selectedBaseInfo.index + 1})</h4>
+                                            <div className="flex items-center gap-4">
+                                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-sm ${BASE_COLORS[selectedBaseInfo.base]}`}>
+                                                    {selectedBaseInfo.base}
+                                                </div>
+                                                <div>
+                                                    <div className="text-sm font-bold text-white">{selectedBaseInfo.details?.name || 'Unknown nucleobase'}</div>
+                                                    <div className="text-[10px] text-gray-400">{selectedBaseInfo.details?.type} • {selectedBaseInfo.details?.hBonds} Hydrogen pairing bridges</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-3">Induce Point Mutation (SNP)</h4>
+                                            <div className="flex gap-2">
+                                                {['A', 'T', 'C', 'G', 'U'].map((b) => {
+                                                    const isCurrent = selectedBaseInfo.base === b;
+                                                    const isInvalid = (type === 'DNA' && b === 'U') || (type === 'RNA' && b === 'T');
+                                                    if (isInvalid) return null;
+                                                    return (
+                                                        <button
+                                                            key={`mutate-${b}`}
+                                                            disabled={isCurrent}
+                                                            onClick={() => handleMutateBase(b)}
+                                                            className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${isCurrent ? 'bg-gray-900 text-gray-600 cursor-not-allowed' : 'bg-gray-800 hover:bg-gray-700 text-white border border-white/5'}`}
+                                                        >
+                                                            {b}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </section>
+                                )}
+
+                                {/* Biophysical Profiles & Exports */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    {/* Calculations */}
+                                    <div className="p-5 bg-gray-900/50 rounded-2xl border border-white/5 space-y-4">
+                                        <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider">Biophysical Profile</h4>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="bg-gray-950 p-3 rounded-xl border border-gray-800">
+                                                <div className="text-[9px] text-gray-500 uppercase tracking-wider">Molecular Weight</div>
+                                                <div className="text-sm font-bold text-white">{genetics.mw.toFixed(1)} g/mol</div>
+                                            </div>
+                                            <div className="bg-gray-950 p-3 rounded-xl border border-gray-800">
+                                                <div className="text-[9px] text-gray-500 uppercase tracking-wider">GC percentage</div>
+                                                <div className="text-sm font-bold text-indigo-400">{genetics.gc.toFixed(1)}%</div>
+                                            </div>
+                                        </div>
+                                        <div className="pt-2 border-t border-gray-800/80">
+                                            <h5 className="text-[9px] text-gray-500 uppercase font-bold mb-1">Translated Peptide sequence</h5>
+                                            <div className="p-2.5 bg-gray-950 rounded-lg text-xs font-mono text-sky-400 truncate border border-gray-900">
+                                                {genetics.protein || "Insufficient codons to translate polypeptide chains."}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Exporter */}
+                                    <div className="p-5 bg-gray-900/50 rounded-2xl border border-white/5 flex flex-col justify-between">
+                                        <div>
+                                            <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">Bioresearch Exporter</h4>
+                                            <p className="text-[11px] text-gray-400 leading-relaxed">
+                                                Generate and download standardized biological files for downstream analytics pipelines (FASTA/JSON sequence parameters).
+                                            </p>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-gray-800/80">
+                                            <button 
+                                                onClick={handleExportFASTA}
+                                                className="py-2.5 bg-gray-950 hover:bg-gray-900 border border-gray-800 rounded-lg text-[10px] font-bold tracking-wider uppercase transition-colors"
+                                            >
+                                                🧬 Export FASTA
+                                            </button>
+                                            <button 
+                                                onClick={handleExportJSON}
+                                                className="py-2.5 bg-gray-950 hover:bg-gray-900 border border-gray-800 rounded-lg text-[10px] font-bold tracking-wider uppercase transition-colors"
+                                            >
+                                                📊 Export JSON
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Mutation Audit Ledger */}
+                                <section className="p-5 bg-gray-900/50 rounded-2xl border border-white/5 space-y-3">
+                                    <h4 className="text-xs font-bold text-gray-300 uppercase tracking-wider">Active Mutation ledger</h4>
+                                    <div className="space-y-2 max-h-[160px] overflow-y-auto">
+                                        {mutationHistory.map((m) => (
+                                            <div key={m.id} className="p-3 bg-gray-950/80 rounded-xl border border-gray-800/60 flex justify-between items-center text-xs">
+                                                <div>
+                                                    <span className="font-mono text-amber-400 font-bold">Pos {m.index + 1}:</span>
+                                                    <span className="ml-1 text-gray-300">{m.from} → {m.to}</span>
+                                                    <span className="ml-2 font-mono text-[10px] text-gray-500 bg-gray-900/80 px-2 py-0.5 rounded border border-gray-800">{m.effect}</span>
+                                                </div>
+                                                <span className="text-[10px] text-gray-600 font-mono">{m.timestamp}</span>
+                                            </div>
+                                        ))}
+                                        {mutationHistory.length === 0 && (
+                                            <div className="text-center py-6 text-xs text-gray-600 font-mono">Mutation ledger empty. Trigger point mutations in the visualizer above.</div>
+                                        )}
+                                    </div>
+                                </section>
+
+                            </div>
+                        </div>
+                    )}
+
+                    {activeTab === 'academy' && (
+                        <div className="bg-gray-900/40 rounded-3xl border border-white/5 p-8 space-y-8 animate-in fade-in duration-300">
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                <div>
+                                    <h2 className="text-2xl font-bold text-white">Base Chemistry Academy</h2>
+                                    <p className="text-slate-400 text-sm mt-1">Select a molecular nucleobase to explore hydrogen pairing parameters.</p>
+                                </div>
+                                <div className="flex gap-2">
+                                    {(type === 'DNA' ? ['A', 'T', 'G', 'C'] : ['A', 'U', 'G', 'C']).map((b) => (
+                                        <button
+                                            key={`acad-${b}`}
+                                            onClick={() => setAcademyBase(b)}
+                                            className={`w-12 h-12 rounded-xl font-bold transition-all border-2 ${
+                                                academyBase === b 
+                                                ? `${BASE_COLORS[b]} scale-110 shadow-lg shadow-white/5` 
+                                                : 'bg-gray-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                                            }`}
+                                        >
+                                            {b}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col items-center justify-center py-12 bg-gray-950/40 rounded-2xl relative border border-gray-900">
+                                <div className="flex items-center gap-16 md:gap-32 relative">
+                                    {/* Left Base */}
+                                    <div className="flex flex-col items-center space-y-3">
+                                        <div className={`w-16 h-16 rounded-full flex items-center justify-center text-xl font-extrabold ${BASE_COLORS[academyBase]}`}>
+                                            {academyBase}
+                                        </div>
+                                        <div className="text-center">
+                                            <div className="font-bold text-sm text-white">{academyBaseInfo?.name}</div>
+                                            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">{academyBaseInfo?.type}</div>
+                                        </div>
+                                    </div>
+
+                                    {/* Hydrogen bond channels */}
+                                    <div className="flex flex-col gap-3 justify-center items-center">
+                                        {Array.from({ length: academyBaseInfo?.hBonds || 2 }).map((_, i) => (
+                                            <div key={`bond-${i}`} className="flex items-center gap-2">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
+                                                <div className="h-0.5 w-16 md:w-24 border-t-2 border-dashed border-slate-700 animate-pulse"></div>
+                                                <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
+                                            </div>
+                                        ))}
+                                        <div className="bg-gray-900 text-slate-400 px-3 py-1 rounded-full border border-white/5 text-[9px] font-bold tracking-wider mt-2">
+                                            {academyBaseInfo?.hBonds} HYDROGEN BONDS
+                                        </div>
+                                    </div>
+
+                                    {/* Right Base */}
+                                    <div className="flex flex-col items-center space-y-3">
+                                        <div className={`w-16 h-16 rounded-full flex items-center justify-center text-xl font-extrabold ${BASE_COLORS[academyComplement]}`}>
+                                            {academyComplement}
+                                        </div>
+                                        <div className="text-center">
+                                            <div className="font-bold text-sm text-white">{academyComplementInfo?.name}</div>
+                                            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">{academyComplementInfo?.type}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="p-4 bg-gray-950/80 rounded-xl border border-white/5">
+                                    <h4 className="text-xs font-bold text-slate-500 uppercase mb-2 font-mono">Structural Rules</h4>
+                                    <p className="text-slate-300 text-sm italic leading-relaxed">
+                                        "Chargaff's molecular alignment rules outline that in double-strand DNA, {academyBase} binds exclusively with {academyComplement} to guarantee a completely static structural diameter."
+                                    </p>
+                                </div>
+                                <div className="p-4 bg-gray-950/80 rounded-xl border border-white/5">
+                                    <h4 className="text-xs font-bold text-slate-500 uppercase mb-2 font-mono">Thermodynamic profile</h4>
+                                    <p className="text-slate-300 text-sm leading-relaxed">
+                                        {academyBaseInfo?.hBonds === 3 
+                                            ? "C-G base pairings hold triple hydrogen linkages, contributing heavy thermodynamic stability. Requires higher temperature gradients to untie during PCR amplification processes." 
+                                            : "A-T / A-U pairings hold dual hydrogen bounds, offering minor resistance. Typically situated at transcription start locations (e.g. TATA box promoter zones)."}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {activeTab === 'ribosome' && (
+                        <div className="bg-gray-900/40 rounded-3xl border border-white/5 p-6 md:p-8 space-y-8 animate-in fade-in duration-300">
+                            {/* Controls */}
+                            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 pb-4 border-b border-white/5">
+                                <div>
+                                    <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                                        <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
+                                        Translation & Ribosome Lab
+                                    </h2>
+                                    <p className="text-slate-400 text-sm mt-1">
+                                        Observe triplet codon analysis and dynamic tRNA molecular docking synthesis in real-time.
+                                    </p>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+                                    {/* Action Buttons */}
+                                    <div className="flex bg-slate-950 rounded-xl p-1 border border-white/5 text-xs font-bold">
+                                        <button
+                                            onClick={() => { if (ribosomeIndex > 0) setRibosomeIndex(prev => prev - 1); }}
+                                            disabled={ribosomeIndex === 0}
+                                            className="px-3 py-1.5 text-gray-400 hover:text-white disabled:opacity-30"
+                                        >
+                                            Step Back
+                                        </button>
+
+                                        <button
+                                            onClick={() => setIsPlayingRibosome(!isPlayingRibosome)}
+                                            disabled={ribosomeIndex >= genetics.codons.length}
+                                            className={`px-4 py-1.5 rounded-lg text-slate-950 font-black transition-all ${isPlayingRibosome ? 'bg-amber-400' : 'bg-emerald-400'} disabled:opacity-50`}
+                                        >
+                                            {isPlayingRibosome ? 'Pause' : 'Translate'}
+                                        </button>
+
+                                        <button
+                                            onClick={() => { if (ribosomeIndex < genetics.codons.length) setRibosomeIndex(prev => prev + 1); }}
+                                            disabled={ribosomeIndex >= genetics.codons.length}
+                                            className="px-3 py-1.5 text-gray-400 hover:text-white disabled:opacity-30"
+                                        >
+                                            Step Forward
+                                        </button>
+                                    </div>
+
+                                    {/* Speeds */}
+                                    <select 
+                                        value={ribosomeSpeed} 
+                                        onChange={e => setRibosomeSpeed(Number(e.target.value))}
+                                        className="bg-gray-950 border border-gray-800 text-xs font-bold rounded-xl px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                    >
+                                        <option value={2000}>Slow (2.0s)</option>
+                                        <option value={1200}>Normal (1.2s)</option>
+                                        <option value={600}>Fast (0.6s)</option>
+                                    </select>
+
+                                    <button
+                                        onClick={() => { setRibosomeIndex(0); setIsPlayingRibosome(false); }}
+                                        className="px-3 py-2 bg-gray-950 hover:bg-gray-900 border border-gray-800 rounded-xl text-xs font-bold text-gray-300"
+                                    >
+                                        Reset
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Simulation Arena */}
+                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                                {/* Ribosome Chamber */}
+                                <div className="lg:col-span-8 bg-gray-950 rounded-2xl border border-gray-800/80 p-6 flex flex-col items-center justify-center min-h-[300px] relative overflow-hidden">
+                                    
+                                    {/* Large visual Ribosome chamber ring */}
+                                    <div className="absolute inset-0 border-8 border-gray-900/30 rounded-full scale-125 opacity-20 pointer-events-none"></div>
+
+                                    {/* tRNA visual docking block */}
+                                    {ribosomeIndex < genetics.codons.length ? (
+                                        <div className="flex flex-col items-center space-y-6 z-10 animate-bounce">
+                                            {/* Peptide load */}
+                                            <div className="px-3 py-1.5 bg-amber-400 text-slate-950 text-xs font-black rounded-lg font-mono">
+                                                {CODON_TABLE[genetics.codons[ribosomeIndex]] || 'Stop'}
+                                            </div>
+                                            {/* tRNA body */}
+                                            <div className="w-12 h-16 bg-gray-900 rounded-xl border-2 border-amber-400 flex items-center justify-center flex-col shadow-lg shadow-amber-400/10">
+                                                <span className="text-[10px] text-amber-400 font-bold font-mono">tRNA</span>
+                                            </div>
+                                            {/* Anti-codon */}
+                                            <div className="flex gap-1">
+                                                {genetics.codons[ribosomeIndex].split('').map((char, index) => {
+                                                    const complementChar = char === 'A' ? 'U' : (char === 'U' ? 'A' : (char === 'C' ? 'G' : 'C'));
+                                                    return (
+                                                        <span key={index} className="px-1.5 py-0.5 bg-slate-800 text-white font-mono text-[10px] font-bold rounded border border-white/5">
+                                                            {complementChar}
+                                                        </span>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="text-gray-500 text-xs font-mono py-12 z-10">Translation Terminated. Ribosomal detachment complete.</div>
+                                    )}
+
+                                    {/* Dividing active line */}
+                                    <div className="w-full my-6 border-t border-dashed border-gray-800"></div>
+
+                                    {/* Active mRNA base codes */}
+                                    <div className="flex items-center gap-1 z-10">
+                                        <span className="text-[10px] text-gray-500 font-bold mr-2 uppercase">mRNA:</span>
+                                        {genetics.codons.map((codon, idx) => {
+                                            const isActive = idx === ribosomeIndex;
+                                            return (
+                                                <div 
+                                                    key={`codon-seq-${idx}`}
+                                                    className={`px-3 py-2 rounded-lg font-mono text-xs flex gap-0.5 font-bold transition-all border ${
+                                                        isActive 
+                                                        ? 'bg-amber-400/10 text-amber-400 border-amber-400 scale-105 shadow-md shadow-amber-400/5' 
+                                                        : idx < ribosomeIndex 
+                                                            ? 'bg-gray-900/40 text-gray-600 border-transparent' 
+                                                            : 'bg-gray-900 text-gray-400 border-gray-800'
+                                                    }`}
+                                                >
+                                                    {codon}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                {/* Growing Protein Ribbon */}
+                                <div className="lg:col-span-4 bg-gray-950 p-6 rounded-2xl border border-gray-800/80 space-y-4">
+                                    <div className="flex justify-between items-center">
+                                        <h3 className="text-xs font-bold text-gray-300 uppercase">Peptide Chain</h3>
+                                        <span className="text-[9px] bg-sky-500/10 text-sky-400 px-1.5 py-0.5 rounded font-mono font-bold">
+                                            {currentPeptides.length} Res.
+                                        </span>
+                                    </div>
+
+                                    <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                                        {currentPeptides.map((pep, idx) => (
+                                            <div 
+                                                key={`pep-node-${idx}`}
+                                                className="p-2.5 bg-gray-900 rounded-xl border border-gray-800 flex items-center justify-between text-xs font-bold animate-in slide-in-from-bottom-2 duration-300"
+                                            >
+                                                <div className="flex items-center gap-2">
+                                                    <span className="w-6 h-6 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-mono text-[9px]">
+                                                        {idx + 1}
+                                                    </span>
+                                                    <span className="text-white font-mono">{pep}</span>
+                                                </div>
+                                                <span className="text-[9px] text-gray-500 font-mono">Peptide Bond</span>
+                                            </div>
+                                        ))}
+                                        {currentPeptides.length === 0 && (
+                                            <div className="text-center text-xs text-gray-600 font-mono py-12">Chamber empty. Click 'Translate' to begin tRNA synthesis.</div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Footer */}
+                    <footer className="mt-16 pt-6 border-t border-gray-900 text-center text-[10px] text-gray-600 tracking-widest uppercase">
+                        NucleoSim Studio Offline Engine v3.0 • Powered by Standalone HTML-React Framework
+                    </footer>
+                </div>
+            );
+        }
+
+        // Render React Node to Root HTML element
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<StandaloneApp />);
+    </script>
+</body>
+</html>
